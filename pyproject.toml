@@ -9,7 +9,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "steam[client] (>=1.4.4,<2.0.0)",
-    "vdf (>=3.4,<4.0)"
+    "vdf (>=3.4,<4.0)",
+    "pyxdg (>=0.28,<0.29)"
 ]
 
 

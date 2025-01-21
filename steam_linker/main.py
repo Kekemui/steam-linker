@@ -1,13 +1,22 @@
 from steam.client import SteamClient
 from pathlib import Path
+from time import time
+from xdg import BaseDirectory
 
+import json
+import random
 import re
 import vdf
 
-somnium_app_id = '948740' # AI: Somnium Files
+
+RESOURCE_NAME = 'gg.kekemui.steam-linker'
 basedir = Path.home() / 'Games' / 'virtual-steam-library'
 
 am_re = re.compile(r"^appmanifest_(\d+).acf$")
+
+class Directories:
+    cacheDir = Path(BaseDirectory.save_cache_path(RESOURCE_NAME))
+    configDir = Path(BaseDirectory.save_config_path(RESOURCE_NAME))
 
 class Library:
     # basepath: Path
@@ -26,7 +35,9 @@ class Library:
         matches = list(am_re.match(x.name) for x in self.basepath.iterdir())
         appids = list(int(x.groups()[0]) for x in matches if x)
 
-        metadata = get_metadata_for_appids(appids)
+        dl = DataLookup()
+
+        metadata = dl.get_metadata_for_appids(appids)
 
         self.games = list(Game(library=self, metadata=value) for value in metadata.values() if 'game' == value['common']['type'].casefold())
 
@@ -76,11 +87,54 @@ class Game:
         return f"({self.appid=}; {self.name=})"
 
 
-def get_metadata_for_appids(appids: list[int]) -> dict[int, str]:
-    client = SteamClient()
-    client.anonymous_login()
-    info = client.get_product_info(apps=appids)
-    return info['apps']
+class DataLookup:
+    CACHE_TTL_SECONDS = 60 * 60 * 24 * 14
+    CACHE_TTL_VARIANCE = 60 * 60 * 24 * 1
+
+    def __init__(self):
+        self.client = SteamClient()
+        self.client.anonymous_login()
+        
+    def get_metadata_for_appids(self, appids: list[int]) -> dict[int, dict]:
+        cached_results = {}
+        for appid in appids:
+            cached = self.__get_cached_metadata_for_appid(appid)
+            if cached is not None:
+                cached_results[appid] = cached
+
+        missing_appids = list(appid for appid in appids if appid not in cached_results.keys())
+
+        if missing_appids:
+            live_results = self.client.get_product_info(missing_appids)['apps']
+        else:
+            live_results = {}
+        self.__write_cache_entries(live_results)
+        return cached_results | live_results
+
+    def __get_cached_metadata_for_appid(self, appid: int, ignore_ttl: bool = False) -> dict|None:
+        cache_path = DataLookup._get_cache_path_for_appid(appid)
+        if not cache_path.exists():
+            print(f"Cache miss for {appid}")
+            return None
+
+        effective_cache_ttl = DataLookup.CACHE_TTL_SECONDS + random.randrange(-DataLookup.CACHE_TTL_VARIANCE, DataLookup.CACHE_TTL_VARIANCE)
+        modtime = cache_path.stat().st_mtime
+        expiration_seconds = modtime + effective_cache_ttl
+        now = time()
+        if ignore_ttl or (expiration_seconds < now):
+            print(f"Calculated expiry time {expiration_seconds} is before {now=}, ignoring")
+            return None
+
+        print(f"Cache hit for {appid}")
+        return json.loads(cache_path.read_text())
+
+    def __write_cache_entries(self, metadata: dict[int, dict]):
+        for (key, value) in metadata.items():
+            DataLookup._get_cache_path_for_appid(key).write_text(json.dumps(value))
+            print(f"Wrote cache for {key}")
+
+    def _get_cache_path_for_appid(appid: int) -> Path:
+        return Directories.cacheDir / f"{appid}.json"
 
 
 def get_libraries() -> list[Library]:
